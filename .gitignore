@@ -1,0 +1,25 @@
+# Data
+data/
+*.zip
+*.tar.gz
+
+# Outputs
+outputs/
+runs/
+*.pth
+*.pt
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+
+# IDE
+.vscode/
+.DS_Store
+*.swp
+
+# Jupyter
+.ipynb_checkpoints/
