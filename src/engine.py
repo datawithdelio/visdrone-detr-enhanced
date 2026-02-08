@@ -124,7 +124,7 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
         # ✅ Save the FIRST val batch (GT vs Pred) ONLY ONCE
         if utils.is_main_process() and first_samples is None:
             # keep CPU copies
-            first_samples = samples.detach().cpu()
+            first_samples = samples.to("cpu")
 
             # Only keep needed keys; assumes DETR-style targets with normalized cxcywh boxes
             first_targets = []
