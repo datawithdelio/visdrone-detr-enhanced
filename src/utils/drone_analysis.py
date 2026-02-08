@@ -1,3 +1,5 @@
+"""Evaluation-analysis helpers for per-class metrics and error reports."""
+
 import contextlib
 import csv
 import json
@@ -12,6 +14,7 @@ from utils import box_ops
 
 
 def get_category_names(coco_gt):
+    """Map COCO category IDs to display names."""
     if coco_gt is None:
         return {}
     names = {}
@@ -21,6 +24,7 @@ def get_category_names(coco_gt):
 
 
 def per_class_ap(coco_eval_bbox):
+    """Compute per-class AP split by small/medium/large object ranges."""
     precision = coco_eval_bbox.eval["precision"]  # [T, R, K, A, M]
     cat_ids = list(coco_eval_bbox.params.catIds)
     rows = []
@@ -51,6 +55,7 @@ def per_class_ap(coco_eval_bbox):
 
 
 def tiny_ap(coco_eval_bbox, tiny_max_area=32 ** 2):
+    """Re-evaluate AP on tiny boxes only using a custom COCO area range."""
     coco_gt = coco_eval_bbox.cocoGt
     coco_dt = coco_eval_bbox.cocoDt
     if coco_dt is None:
@@ -69,6 +74,7 @@ def tiny_ap(coco_eval_bbox, tiny_max_area=32 ** 2):
 
 
 def export_dashboard(output_dir, epoch, coco_eval_bbox, category_names, error_report):
+    """Write JSON/CSV metric artifacts used by the evaluation dashboard."""
     out_dir = Path(output_dir) / "analysis"
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -117,6 +123,7 @@ def export_dashboard(output_dir, epoch, coco_eval_bbox, category_names, error_re
 
 
 def _safe_iou_matrix(gt_xyxy, pred_xyxy):
+    """Return IoU matrix, including empty-safe behavior for no-box cases."""
     if gt_xyxy.numel() == 0 or pred_xyxy.numel() == 0:
         return torch.zeros((gt_xyxy.shape[0], pred_xyxy.shape[0]), dtype=torch.float32)
     iou, _ = box_ops.box_iou(gt_xyxy, pred_xyxy)
@@ -124,6 +131,7 @@ def _safe_iou_matrix(gt_xyxy, pred_xyxy):
 
 
 def compute_error_report(records, num_classes, score_thresh=0.3, iou_thresh=0.5):
+    """Build confusion-style error statistics from GT/prediction records."""
     conf = np.zeros((num_classes, num_classes), dtype=np.int64)
     tp = np.zeros((num_classes,), dtype=np.int64)
     fp = np.zeros((num_classes,), dtype=np.int64)
@@ -147,6 +155,7 @@ def compute_error_report(records, num_classes, score_thresh=0.3, iou_thresh=0.5)
         matched_pred = set()
 
         if ious.numel() > 0:
+            # Greedy one-to-one matching on highest IoU above the threshold.
             while True:
                 iou_flat = ious.clone()
                 if matched_gt:

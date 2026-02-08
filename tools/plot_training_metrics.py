@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Plot loss and AP curves from line-delimited JSON training logs."""
+
 import argparse
 import json
 from pathlib import Path
@@ -7,6 +9,7 @@ import matplotlib.pyplot as plt
 
 
 def _load_log(log_path):
+    """Load all JSON records from ``log.txt``."""
     rows = []
     with log_path.open("r") as f:
         for line in f:
@@ -18,6 +21,7 @@ def _load_log(log_path):
 
 
 def _series(rows, key):
+    """Extract epoch-aligned x/y lists for one scalar metric key."""
     xs, ys = [], []
     for r in rows:
         if key in r and isinstance(r[key], (int, float)):
@@ -27,6 +31,7 @@ def _series(rows, key):
 
 
 def _plot_multi(out_path, title, data, ylabel):
+    """Render one chart with multiple named series."""
     plt.figure(figsize=(9, 5))
     for label, (xs, ys) in data.items():
         if xs and ys:
@@ -56,6 +61,7 @@ def main():
     out_dir = Path(args.output_dir) if args.output_dir else (log_path.parent / "plots")
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Loss breakdown helps distinguish optimization issues from regression in AP.
     losses = {
         "train_loss": _series(rows, "train_loss"),
         "test_loss": _series(rows, "test_loss"),
@@ -65,6 +71,7 @@ def main():
     }
     _plot_multi(out_dir / "loss_curves.png", "Loss Curves", losses, "Loss")
 
+    # COCO evaluator stores standard bbox metrics in fixed index order.
     ap, ap50, ap75, aps, apm, apl, epochs = [], [], [], [], [], [], []
     for r in rows:
         bbox = r.get("test_coco_eval_bbox", None)

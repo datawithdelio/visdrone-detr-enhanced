@@ -21,6 +21,7 @@ from utils.drone_analysis import get_category_names, compute_error_report, expor
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, max_norm: float = 0):
+    """Train DETR for a single epoch and return averaged metric scalars."""
     model.train()
     criterion.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
@@ -71,6 +72,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 @torch.no_grad()
 def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, output_dir, args=None, epoch=0):
+    """Run validation, COCO evaluation, and optional dashboard/report exports."""
     model.eval()
     criterion.eval()
 
@@ -235,6 +237,7 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
 # ======================================================
 
 def _cxcywh_to_xyxy_abs(boxes, orig_size_hw):
+    """Convert normalized cxcywh boxes to absolute xyxy format."""
     # boxes: Tensor [N,4] in normalized cx,cy,w,h
     H, W = orig_size_hw
     cx, cy, bw, bh = boxes.unbind(-1)
@@ -245,6 +248,7 @@ def _cxcywh_to_xyxy_abs(boxes, orig_size_hw):
     return torch.stack([x1, y1, x2, y2], dim=-1)
 
 def _unnormalize_img(img_chw):
+    """Undo ImageNet normalization for PIL/JPEG export."""
     # DETR uses ImageNet normalization
     mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
     std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
@@ -253,10 +257,12 @@ def _unnormalize_img(img_chw):
     return x.permute(1, 2, 0).numpy()  # HWC uint8
 
 def _draw_xyxy(draw, box, color=(255, 0, 0), w=3):
+    """Draw one xyxy bounding box on a PIL ImageDraw canvas."""
     x1, y1, x2, y2 = [float(v) for v in box]
     draw.rectangle([x1, y1, x2, y2], outline=color, width=w)
 
 def _save_val_batch_images(first_samples, first_targets, first_results, out_dir, max_images=8):
+    """Save grid images comparing validation GT and predictions."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 

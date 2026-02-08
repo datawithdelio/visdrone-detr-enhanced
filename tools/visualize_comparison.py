@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Create side-by-side validation visualizations for baseline vs improved models."""
+
 import argparse
 import json
 import sys
@@ -18,6 +20,7 @@ import utils.misc as utils  # noqa: E402
 
 
 def _unnormalize_img(img_chw):
+    """Undo ImageNet normalization for visualization output."""
     mean = torch.tensor([0.485, 0.456, 0.406], device=img_chw.device).view(3, 1, 1)
     std = torch.tensor([0.229, 0.224, 0.225], device=img_chw.device).view(3, 1, 1)
     x = img_chw * std + mean
@@ -26,6 +29,7 @@ def _unnormalize_img(img_chw):
 
 
 def _cxcywh_to_xyxy_abs(boxes, orig_size_hw):
+    """Convert normalized DETR boxes to absolute xyxy coordinates."""
     H, W = orig_size_hw
     cx, cy, bw, bh = boxes.unbind(-1)
     x1 = (cx - bw / 2.0) * W
@@ -36,6 +40,7 @@ def _cxcywh_to_xyxy_abs(boxes, orig_size_hw):
 
 
 def _draw_boxes(img, boxes, color, width=3):
+    """Draw a list of xyxy boxes on a PIL image."""
     draw = ImageDraw.Draw(img)
     for b in boxes:
         x1, y1, x2, y2 = [float(v) for v in b]
@@ -44,6 +49,7 @@ def _draw_boxes(img, boxes, color, width=3):
 
 
 def _load_model(ckpt_path, args):
+    """Load checkpoint weights into a DETR model instance."""
     model, _, postprocessors = build_model(args)
     checkpoint = torch.load(ckpt_path, map_location="cpu")
     model.load_state_dict(checkpoint["model"], strict=False)
@@ -53,6 +59,7 @@ def _load_model(ckpt_path, args):
 
 
 def _build_args(parser, cli_args):
+    """Merge CLI overrides into default DETR parser args."""
     args = parser.parse_args([])
     for k, v in vars(cli_args).items():
         if hasattr(args, k) and v is not None:
@@ -121,6 +128,7 @@ def main():
             keep_b = res_b["scores"] >= args.score_thresh
             _draw_boxes(b_img, res_b["boxes"][keep_b].cpu(), color=(0, 128, 255), width=3)
 
+            # Panel layout: GT | baseline | improved.
             panel = Image.new("RGB", (base.width * 3, base.height), (25, 25, 25))
             panel.paste(gt_img, (0, 0))
             panel.paste(a_img, (base.width, 0))
