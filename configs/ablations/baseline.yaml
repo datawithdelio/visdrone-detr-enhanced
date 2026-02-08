@@ -1,0 +1,14 @@
+name: baseline
+output_dir: outputs/ablations/baseline
+args:
+  dataset_file: coco
+  coco_path: data/subset
+  num_classes: 11
+  device: mps
+  epochs: 25
+  batch_size: 4
+  lr: 0.0001
+  lr_backbone: 0.00001
+  num_queries: 100
+  backbone: resnet50
+  enable_eval_dashboard: true

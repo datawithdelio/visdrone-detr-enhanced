@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw
 import utils.misc as utils
 from datasets.coco_eval import CocoEvaluator
 from datasets.panoptic_eval import PanopticEvaluator
+from utils.drone_analysis import get_category_names, compute_error_report, export_dashboard
 
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
@@ -69,7 +70,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 
 @torch.no_grad()
-def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, output_dir):
+def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, output_dir, args=None, epoch=0):
     model.eval()
     criterion.eval()
 
@@ -94,6 +95,7 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
     first_samples = None
     first_targets = None
     first_results = None
+    analysis_records = []
 
     for samples, targets in metric_logger.log_every(data_loader, 10, header):
         samples = samples.to(device)
@@ -147,6 +149,18 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
         if coco_evaluator is not None:
             coco_evaluator.update(res)
 
+        if args is not None and getattr(args, "enable_eval_dashboard", False):
+            for t, r in zip(targets, results):
+                H, W = [int(x) for x in t["orig_size"].tolist()]
+                gt_xyxy = _cxcywh_to_xyxy_abs(t["boxes"], (H, W)).detach().cpu()
+                analysis_records.append({
+                    "gt_boxes": gt_xyxy,
+                    "gt_labels": t["labels"].detach().cpu(),
+                    "pred_boxes": r["boxes"].detach().cpu(),
+                    "pred_labels": r["labels"].detach().cpu(),
+                    "pred_scores": r["scores"].detach().cpu(),
+                })
+
         if panoptic_evaluator is not None:
             res_pano = postprocessors["panoptic"](outputs, target_sizes, orig_target_sizes)
             for i, target in enumerate(targets):
@@ -189,6 +203,29 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
     # ✅ Write the report images at the end of eval
     if utils.is_main_process() and first_samples is not None:
         _save_val_batch_images(first_samples, first_targets, first_results, out_dir="outputs/report", max_images=8)
+
+    if (
+        utils.is_main_process()
+        and args is not None
+        and getattr(args, "enable_eval_dashboard", False)
+        and coco_evaluator is not None
+        and "bbox" in coco_evaluator.coco_eval
+    ):
+        category_names = get_category_names(base_ds)
+        error_report = compute_error_report(
+            analysis_records,
+            num_classes=getattr(args, "num_classes", 91),
+            score_thresh=getattr(args, "eval_score_thresh", 0.3),
+            iou_thresh=0.5,
+        )
+        dashboard_summary = export_dashboard(
+            output_dir=output_dir,
+            epoch=epoch,
+            coco_eval_bbox=coco_evaluator.coco_eval["bbox"],
+            category_names=category_names,
+            error_report=error_report,
+        )
+        stats["AP_tiny"] = dashboard_summary["AP_tiny"]
 
     return stats, coco_evaluator
 

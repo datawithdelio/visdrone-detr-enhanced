@@ -1,0 +1,18 @@
+name: focal_loss
+output_dir: outputs/ablations/focal_loss
+args:
+  dataset_file: coco
+  coco_path: data/subset
+  num_classes: 11
+  device: mps
+  epochs: 25
+  batch_size: 4
+  lr: 0.0001
+  lr_backbone: 0.00001
+  num_queries: 100
+  backbone: resnet50
+  use_focal_loss: true
+  focal_gamma: 2.0
+  class_weight_strategy: effective_num_samples
+  effective_num_beta: 0.999
+  enable_eval_dashboard: true

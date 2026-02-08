@@ -2,6 +2,8 @@
 """
 DETR model and criterion classes.
 """
+import ast
+
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -86,7 +88,22 @@ class SetCriterion(nn.Module):
         1) we compute hungarian assignment between ground truth boxes and the outputs of the model
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
-    def __init__(self, num_classes, matcher, weight_dict, eos_coef, losses):
+    def __init__(
+        self,
+        num_classes,
+        matcher,
+        weight_dict,
+        eos_coef,
+        losses,
+        use_focal_loss=False,
+        focal_alpha=None,
+        focal_gamma=2.0,
+        small_object_weighted_loss=False,
+        small_obj_area_thresh=0.001,
+        small_obj_weight_factor=3.0,
+        small_obj_gamma=1.5,
+        small_obj_max_weight=10.0,
+    ):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -101,9 +118,33 @@ class SetCriterion(nn.Module):
         self.weight_dict = weight_dict
         self.eos_coef = eos_coef
         self.losses = losses
+        self.use_focal_loss = use_focal_loss
+        self.focal_gamma = focal_gamma
+        self.small_object_weighted_loss = small_object_weighted_loss
+        self.small_obj_area_thresh = small_obj_area_thresh
+        self.small_obj_weight_factor = small_obj_weight_factor
+        self.small_obj_gamma = small_obj_gamma
+        self.small_obj_max_weight = small_obj_max_weight
         empty_weight = torch.ones(self.num_classes + 1)
         empty_weight[-1] = self.eos_coef
         self.register_buffer('empty_weight', empty_weight)
+        if focal_alpha is not None:
+            self.register_buffer('focal_alpha', focal_alpha)
+        else:
+            self.focal_alpha = None
+
+    def _multiclass_focal_loss(self, logits, target_classes):
+        logits_2d = logits.flatten(0, 1)
+        targets_1d = target_classes.flatten(0, 1)
+        ce_loss = F.cross_entropy(
+            logits_2d,
+            targets_1d,
+            weight=self.focal_alpha,
+            reduction='none'
+        )
+        pt = torch.exp(-ce_loss)
+        focal = ((1.0 - pt) ** self.focal_gamma) * ce_loss
+        return focal.mean()
 
     def loss_labels(self, outputs, targets, indices, num_boxes, log=True):
         """Classification loss (NLL)
@@ -118,7 +159,10 @@ class SetCriterion(nn.Module):
                                     dtype=torch.int64, device=src_logits.device)
         target_classes[idx] = target_classes_o
 
-        loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, self.empty_weight)
+        if self.use_focal_loss:
+            loss_ce = self._multiclass_focal_loss(src_logits, target_classes)
+        else:
+            loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, self.empty_weight)
         losses = {'loss_ce': loss_ce}
 
         if log:
@@ -146,14 +190,28 @@ class SetCriterion(nn.Module):
         target_boxes = torch.cat([t['boxes'][i] for t, (_, i) in zip(targets, indices)], dim=0)
 
         loss_bbox = F.l1_loss(src_boxes, target_boxes, reduction='none')
+        box_weights = torch.ones((target_boxes.shape[0],), device=target_boxes.device, dtype=target_boxes.dtype)
+        if self.small_object_weighted_loss and target_boxes.numel() > 0:
+            target_area_norm = []
+            for t, (_, i) in zip(targets, indices):
+                if len(i) == 0:
+                    continue
+                img_area = (t["size"][0] * t["size"][1]).to(dtype=target_boxes.dtype)
+                area_norm = t["area"][i].to(dtype=target_boxes.dtype) / img_area.clamp(min=1.0)
+                target_area_norm.append(area_norm)
+            if target_area_norm:
+                target_area_norm = torch.cat(target_area_norm, dim=0).clamp(min=1e-8)
+                size_ratio = (self.small_obj_area_thresh / target_area_norm).clamp(min=1.0)
+                box_weights = 1.0 + self.small_obj_weight_factor * torch.pow(size_ratio - 1.0, self.small_obj_gamma)
+                box_weights = box_weights.clamp(max=self.small_obj_max_weight)
 
         losses = {}
-        losses['loss_bbox'] = loss_bbox.sum() / num_boxes
+        losses['loss_bbox'] = (loss_bbox.sum(-1) * box_weights).sum() / num_boxes
 
         loss_giou = 1 - torch.diag(box_ops.generalized_box_iou(
             box_ops.box_cxcywh_to_xyxy(src_boxes),
             box_ops.box_cxcywh_to_xyxy(target_boxes)))
-        losses['loss_giou'] = loss_giou.sum() / num_boxes
+        losses['loss_giou'] = (loss_giou * box_weights).sum() / num_boxes
         return losses
 
     def loss_masks(self, outputs, targets, indices, num_boxes):
@@ -319,12 +377,33 @@ def build(args):
     if args.masks:
         losses += ["masks"]
 
+    focal_alpha = None
+    if getattr(args, "use_focal_loss", False):
+        alpha_vec = torch.ones(num_classes + 1, dtype=torch.float32)
+        class_weights = getattr(args, "class_weights", None)
+        if class_weights is not None:
+            if isinstance(class_weights, str):
+                class_weights = ast.literal_eval(class_weights)
+            if len(class_weights) != num_classes:
+                raise ValueError(f"class_weights length {len(class_weights)} != num_classes {num_classes}")
+            alpha_vec[:num_classes] = torch.tensor(class_weights, dtype=torch.float32)
+        alpha_vec[-1] = args.eos_coef
+        focal_alpha = alpha_vec
+
     criterion = SetCriterion(
         num_classes,
         matcher=matcher,
         weight_dict=weight_dict,
         eos_coef=args.eos_coef,
-        losses=losses
+        losses=losses,
+        use_focal_loss=getattr(args, "use_focal_loss", False),
+        focal_alpha=focal_alpha,
+        focal_gamma=getattr(args, "focal_gamma", 2.0),
+        small_object_weighted_loss=getattr(args, "small_object_weighted_loss", False),
+        small_obj_area_thresh=getattr(args, "small_obj_area_thresh", 0.001),
+        small_obj_weight_factor=getattr(args, "small_obj_weight_factor", 3.0),
+        small_obj_gamma=getattr(args, "small_obj_gamma", 1.5),
+        small_obj_max_weight=getattr(args, "small_obj_max_weight", 10.0),
     )
     criterion.to(device)
 

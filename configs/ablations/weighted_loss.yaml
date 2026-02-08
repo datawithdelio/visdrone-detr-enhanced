@@ -1,0 +1,19 @@
+name: weighted_loss
+output_dir: outputs/ablations/weighted_loss
+args:
+  dataset_file: coco
+  coco_path: data/subset
+  num_classes: 11
+  device: mps
+  epochs: 25
+  batch_size: 4
+  lr: 0.0001
+  lr_backbone: 0.00001
+  num_queries: 100
+  backbone: resnet50
+  small_object_weighted_loss: true
+  small_obj_area_thresh: 0.001
+  small_obj_weight_factor: 3.5
+  small_obj_gamma: 1.5
+  small_obj_max_weight: 10.0
+  enable_eval_dashboard: true

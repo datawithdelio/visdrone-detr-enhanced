@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 import sys
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 import utils.misc as utils
-from datasets import build_dataset
+from datasets import build_dataset, get_coco_api_from_dataset
 from engine import evaluate, train_one_epoch
 from models import build_model
 
@@ -68,6 +68,7 @@ def main(args):
     print(f"✅ Model loaded: {sum(p.numel() for p in model.parameters() if p.requires_grad):,} params")
     dataset_train = build_dataset(image_set='train', args=args)
     dataset_val = build_dataset(image_set='val', args=args)
+    base_ds = get_coco_api_from_dataset(dataset_val)
     data_loader_train = DataLoader(dataset_train, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, collate_fn=utils.collate_fn, drop_last=True)
     data_loader_val = DataLoader(dataset_val, batch_size=1, shuffle=False, num_workers=args.num_workers, collate_fn=utils.collate_fn)
     param_dicts = [{"params": [p for n, p in model.named_parameters() if "backbone" not in n and p.requires_grad]}, {"params": [p for n, p in model.named_parameters() if "backbone" in n and p.requires_grad], "lr": args.lr_backbone}]
@@ -80,7 +81,9 @@ def main(args):
         train_one_epoch(model, criterion, data_loader_train, optimizer, device, epoch, args.clip_max_norm)
         lr_scheduler.step()
         if (epoch + 1) % 5 == 0:
-            test_stats, coco_evaluator = evaluate(model, criterion, postprocessors, data_loader_val, device)
+            test_stats, coco_evaluator = evaluate(
+                model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir, args=args, epoch=epoch
+            )
             if 'bbox' in coco_evaluator.coco_eval:
                 current_map = coco_evaluator.coco_eval['bbox'].stats[0]
                 if current_map > best_map:
