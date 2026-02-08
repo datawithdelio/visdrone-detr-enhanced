@@ -64,6 +64,45 @@ def _compute_class_weights_from_coco(args):
     return weights
 
 
+def _validate_coco_configuration(args):
+    """Fail fast on common COCO/VisDrone config mistakes that lead to zero AP."""
+    if args.dataset_file != "coco" or not args.coco_path:
+        return
+
+    ann_path = Path(args.coco_path) / "annotations" / "instances_train2017.json"
+    if not ann_path.exists():
+        print(f"⚠️  COCO config check skipped (missing {ann_path})")
+        return
+
+    with ann_path.open("r") as f:
+        coco = json.load(f)
+
+    categories = coco.get("categories", [])
+    if not categories:
+        raise ValueError(f"No categories found in {ann_path}")
+
+    dataset_num_classes = len(categories)
+    if args.num_classes != dataset_num_classes:
+        raise ValueError(
+            f"num_classes={args.num_classes} does not match dataset categories={dataset_num_classes}. "
+            f"Use --num_classes {dataset_num_classes}."
+        )
+
+    cat_ids = sorted(int(c["id"]) for c in categories if "id" in c)
+    expected_ids = list(range(1, dataset_num_classes + 1))
+    if cat_ids != expected_ids:
+        print(
+            "⚠️  Non-contiguous category ids detected in annotations. "
+            "Ensure label mapping is consistent with training/evaluation."
+        )
+
+    if args.num_queries < 50:
+        print(
+            f"⚠️  num_queries={args.num_queries} is very low for dense drone scenes; "
+            "this can severely cap recall."
+        )
+
+
 def get_args_parser():
     """Build argument parser shared across training utilities."""
     parser = argparse.ArgumentParser('Set transformer detector', add_help=False)
@@ -100,7 +139,7 @@ def get_args_parser():
                         help="Dropout applied in the transformer")
     parser.add_argument('--nheads', default=8, type=int,
                         help="Number of attention heads inside the transformer's attentions")
-    parser.add_argument('--num_queries', default=10, type=int,
+    parser.add_argument('--num_queries', default=100, type=int,
                         help="Number of query slots")
     parser.add_argument('--pre_norm', action='store_true')
 
@@ -159,7 +198,7 @@ def get_args_parser():
 
     # ✅ FIX: some parts of this repo expect args.coco_path
     parser.add_argument('--coco_path', type=str, default=None, help='Path to COCO dataset')
-    parser.add_argument('--num_classes', type=int, default=91, help='Number of object classes')
+    parser.add_argument('--num_classes', type=int, default=11, help='Number of object classes')
 
     parser.add_argument('--coco_panoptic_path', type=str)
     parser.add_argument('--remove_difficult', action='store_true')
@@ -198,6 +237,8 @@ def main(args):
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
+
+    _validate_coco_configuration(args)
 
     # Precompute class weights once and pass them through args.
     args.class_weights = _compute_class_weights_from_coco(args)
