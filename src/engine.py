@@ -157,7 +157,7 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
                 gt_xyxy = _cxcywh_to_xyxy_abs(t["boxes"], (H, W)).detach().cpu()
                 analysis_records.append({
                     "gt_boxes": gt_xyxy,
-                    "gt_labels": t["labels"].detach().cpu(),
+                    "gt_labels": (t["labels"] + 1).detach().cpu(),
                     "pred_boxes": r["boxes"].detach().cpu(),
                     "pred_labels": r["labels"].detach().cpu(),
                     "pred_scores": r["scores"].detach().cpu(),

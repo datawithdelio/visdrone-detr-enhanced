@@ -68,8 +68,10 @@ class ConvertCocoPolysToMask(object):
         boxes[:, 0::2].clamp_(min=0, max=w)
         boxes[:, 1::2].clamp_(min=0, max=h)
 
+        # Use zero-based class ids internally for DETR training loss.
+        # COCO annotations are typically 1-based category ids.
         classes = [obj["category_id"] for obj in anno]
-        classes = torch.tensor(classes, dtype=torch.int64)
+        classes = torch.tensor(classes, dtype=torch.int64) - 1
 
         if self.return_masks:
             segmentations = [obj["segmentation"] for obj in anno]

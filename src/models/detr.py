@@ -300,6 +300,8 @@ class PostProcess(nn.Module):
 
         prob = F.softmax(out_logits, -1)
         scores, labels = prob[..., :-1].max(-1)
+        # Convert back to 1-based COCO category ids for evaluator/output.
+        labels = labels + 1
 
         boxes = box_ops.box_cxcywh_to_xyxy(out_bbox)
         img_h, img_w = target_sizes.unbind(1)
