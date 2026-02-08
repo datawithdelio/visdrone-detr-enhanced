@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 import main as main_module
 
 if __name__ == "__main__":
-    # Parse arguments and run
+    # Parse CLI options defined in src/main.py and dispatch training/eval.
     args = main_module.get_args_parser().parse_args()
     print(f"✅ Arguments parsed: {args}")
     main_module.main(args)

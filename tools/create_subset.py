@@ -142,6 +142,7 @@ def create_balanced_subset(
 
 
 def main():
+    """Parse CLI args and generate one subset split."""
     parser = argparse.ArgumentParser(description='Create dataset subset using symlinks')
     parser.add_argument('--input-annotations', required=True, help='Input COCO JSON')
     parser.add_argument('--output-annotations', required=True, help='Output COCO JSON')

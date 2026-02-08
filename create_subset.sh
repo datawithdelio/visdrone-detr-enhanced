@@ -1,5 +1,10 @@
 #!/bin/bash
-# Create dataset subset for faster training
+# Build smaller train/val subsets for fast local experiments.
+#
+# This script calls tools/create_subset.py twice:
+# 1) train subset from data/processed/train2017
+# 2) val subset from data/processed/val2017
+set -euo pipefail
 
 echo "🚀 Creating VisDrone Dataset Subset"
 echo "===================================="

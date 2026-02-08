@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Run Optuna trials for DroneDETR++ and export study summaries."""
+
 import argparse
 import csv
 import json
@@ -10,6 +12,7 @@ import optuna
 
 
 def _read_best_metric(log_path, metric):
+    """Return the best metric value found in a training log file."""
     if not log_path.exists():
         return None
     best = None
@@ -36,6 +39,7 @@ def _read_best_metric(log_path, metric):
 
 
 def _run_trial(train_script, root, base_args, trial_args, output_dir):
+    """Launch one training run with merged base + trial arguments."""
     cmd = [sys.executable, str(train_script)]
     merged = {**base_args, **trial_args, "output_dir": str(output_dir)}
     for k, v in merged.items():
@@ -98,6 +102,7 @@ def main():
     )
 
     def objective(trial):
+        # Sample optimization hyperparameters for this training run.
         trial_args = {
             "lr": trial.suggest_float("lr", 5e-5, 4e-4, log=True),
             "lr_backbone": trial.suggest_float("lr_backbone", 5e-6, 5e-5, log=True),
@@ -110,6 +115,7 @@ def main():
         }
         output_dir = out_root / f"trial_{trial.number:04d}"
         _run_trial(train_script, root, base_args, trial_args, output_dir)
+        # Read the best value across epochs, not just the final epoch.
         metric_value = _read_best_metric(output_dir / "log.txt", args.metric)
         if metric_value is None:
             raise RuntimeError(f"Trial {trial.number} did not produce metric {args.metric}")

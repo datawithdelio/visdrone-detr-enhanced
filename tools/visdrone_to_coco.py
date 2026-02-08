@@ -1,3 +1,5 @@
+"""Convert VisDrone annotation text files into COCO JSON format."""
+
 import json
 from pathlib import Path
 from PIL import Image
@@ -47,6 +49,7 @@ def read_visdrone_txt(txt_path: Path):
     return boxes
 
 def convert_split(visdrone_root: Path, split_name: str, out_json: Path):
+    """Convert one VisDrone split folder (train/val) to a COCO annotations file."""
     images_dir = visdrone_root / split_name / "images"
     ann_dir = visdrone_root / split_name / "annotations"
 
@@ -113,6 +116,7 @@ def convert_split(visdrone_root: Path, split_name: str, out_json: Path):
     print(f"Saved {out_json} | images={len(coco['images'])} anns={len(coco['annotations'])}")
 
 def main():
+    """Run conversion for default VisDrone train/val directories."""
     # Adjust this root if needed
     root = Path("/Users/deliorincon/Desktop/Kumar")
 

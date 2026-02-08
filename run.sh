@@ -1,12 +1,18 @@
 #!/bin/bash
-# Quick training script
+# Quick baseline training launcher.
+#
+# Usage:
+#   ./run.sh [extra train.py args]
+# Example:
+#   ./run.sh --batch_size 4 --device cuda
+set -euo pipefail
 
 echo "🚀 Starting VisDrone DETR Training..."
 
-# Activate virtual environment
+# Activate local virtual environment before running Python.
 source ~/kumar/bin/activate
 
-# Run training with default parameters
+# Run baseline training defaults; user flags are appended via "$@".
 python train.py \
   --dataset_file coco \
   --coco_path data/processed \

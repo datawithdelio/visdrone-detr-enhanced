@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Run tiled + multi-scale inference for high-resolution drone images."""
+
 import argparse
 import json
 import math
@@ -20,6 +22,7 @@ import utils.misc as utils  # noqa: E402
 
 
 def _get_model_args(cli_args):
+    """Build model args by reusing defaults from the main training parser."""
     from main import get_args_parser  # noqa: E402
     parser = get_args_parser()
     args = parser.parse_args([])
@@ -32,6 +35,7 @@ def _get_model_args(cli_args):
 
 
 def _load_model(ckpt_path, args):
+    """Load a DETR checkpoint and matching postprocessors."""
     model, _, post = build_model(args)
     ckpt = torch.load(ckpt_path, map_location="cpu")
     model.load_state_dict(ckpt["model"], strict=False)
@@ -41,6 +45,7 @@ def _load_model(ckpt_path, args):
 
 
 def _iter_tiles(width, height, tile_size, overlap):
+    """Yield (x, y, w, h) windows covering the full image with overlap."""
     stride = max(1, int(tile_size * (1.0 - overlap)))
     xs = list(range(0, max(width - tile_size + 1, 1), stride))
     ys = list(range(0, max(height - tile_size + 1, 1), stride))
@@ -54,6 +59,7 @@ def _iter_tiles(width, height, tile_size, overlap):
 
 
 def _prepare_tile(img):
+    """Convert PIL tile to normalized tensor expected by DETR."""
     t = TF.to_tensor(img)
     t = Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])(t, None)[0]
     return t
@@ -61,11 +67,13 @@ def _prepare_tile(img):
 
 @torch.no_grad()
 def _predict_image(model, post, image_pil, device, tile_size, overlap, score_thresh, scales, nms_thr):
+    """Predict one image by merging detections from tiled scaled passes."""
     all_boxes = []
     all_scores = []
     all_labels = []
 
     for scale in scales:
+        # Evaluate the same frame at different resolutions for small-object recall.
         scaled_w = max(1, int(round(image_pil.width * scale)))
         scaled_h = max(1, int(round(image_pil.height * scale)))
         scaled_img = image_pil.resize((scaled_w, scaled_h), Image.BILINEAR)
@@ -102,6 +110,7 @@ def _predict_image(model, post, image_pil, device, tile_size, overlap, score_thr
     scores = torch.cat(all_scores, dim=0)
     labels = torch.cat(all_labels, dim=0)
 
+    # Apply NMS per class after concatenating all tile/scale detections.
     kept = []
     for cls in labels.unique():
         idx = torch.where(labels == cls)[0]

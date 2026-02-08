@@ -1,4 +1,10 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
+"""Main training/evaluation entrypoint used by ``train.py``.
+
+This file extends the original DETR CLI with DroneDETR++ options for
+small-object weighting, focal loss, and dashboard exports.
+"""
+
 import argparse
 import datetime
 import json
@@ -20,6 +26,7 @@ from models import build_model
 
 
 def _compute_class_weights_from_coco(args):
+    """Compute per-class weights from COCO annotations for imbalance handling."""
     if args.dataset_file != "coco":
         return None
     if args.class_weight_strategy == "none":
@@ -58,6 +65,7 @@ def _compute_class_weights_from_coco(args):
 
 
 def get_args_parser():
+    """Build argument parser shared across training utilities."""
     parser = argparse.ArgumentParser('Set transformer detector', add_help=False)
     parser.add_argument('--lr', default=1e-4, type=float)
     parser.add_argument('--lr_backbone', default=1e-5, type=float)
@@ -175,6 +183,7 @@ def get_args_parser():
 
 
 def main(args):
+    """Run training or evaluation based on parsed CLI arguments."""
     utils.init_distributed_mode(args)
     print("git:\n  {}\n".format(utils.get_sha()))
 
@@ -190,6 +199,7 @@ def main(args):
     np.random.seed(seed)
     random.seed(seed)
 
+    # Precompute class weights once and pass them through args.
     args.class_weights = _compute_class_weights_from_coco(args)
     if args.class_weights is not None:
         print("✅ Computed class weights for imbalance handling")
@@ -252,12 +262,14 @@ def main(args):
         writer = SummaryWriter(log_dir=str(tb_dir))
 
     if args.resume:
+        # Resume supports both local checkpoint paths and URL checkpoints.
         if args.resume.startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(
                 args.resume, map_location='cpu', check_hash=True)
         else:
             checkpoint = torch.load(args.resume, map_location='cpu')
 
+        # Drop heads that depend on class count / query count when resuming.
         del checkpoint["model"]["class_embed.weight"]
         del checkpoint["model"]["class_embed.bias"]
         del checkpoint["model"]["query_embed.weight"]
@@ -308,6 +320,7 @@ def main(args):
                      'n_parameters': n_parameters}
 
         if writer is not None and utils.is_main_process():
+            # Keep TensorBoard output scalar-only to avoid serialization issues.
             for k, v in log_stats.items():
                 if isinstance(v, (int, float)):
                     writer.add_scalar(k, v, epoch)

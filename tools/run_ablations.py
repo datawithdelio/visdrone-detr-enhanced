@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Run ablation configs and aggregate best validation metrics."""
+
 import argparse
 import csv
 import json
@@ -10,10 +12,12 @@ import yaml
 
 
 def _to_cli_flag(key):
+    """Convert ``snake_case`` keys to CLI flag format."""
     return f"--{key.replace('_', '-')}"
 
 
 def _build_command(train_script, args_dict):
+    """Build a Python command for one experiment configuration."""
     cmd = [sys.executable, str(train_script)]
     for key, value in args_dict.items():
         flag = _to_cli_flag(key)
@@ -26,6 +30,7 @@ def _build_command(train_script, args_dict):
 
 
 def _read_best_metrics(output_dir):
+    """Parse ``log.txt`` and return best AP/AP50/AP_small with epoch."""
     log_path = output_dir / "log.txt"
     if not log_path.exists():
         return {"best_AP": None, "best_AP50": None, "best_AP_small": None, "best_epoch": None}
@@ -97,6 +102,7 @@ def main():
         print("No experiments selected.")
         return
 
+    # Report deltas against baseline when available.
     baseline = next((r for r in results if r["name"] == "baseline"), None)
     baseline_ap = baseline["best_AP"] if baseline else None
     for r in results:

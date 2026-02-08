@@ -24,6 +24,7 @@ from models import build_model
 
 
 def get_args_parser():
+    """Build CLI options tuned for fast iteration experiments."""
     parser = argparse.ArgumentParser('Fast DETR Training', add_help=False)
     
     # Learning rate
@@ -107,6 +108,7 @@ def get_args_parser():
 
 
 def main(args):
+    """Run shortened, speed-oriented training with periodic validation."""
     print("=" * 60)
     print("🚀 Fast DETR Training for VisDrone")
     print("=" * 60)
