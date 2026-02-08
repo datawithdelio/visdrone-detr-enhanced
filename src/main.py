@@ -2,6 +2,7 @@
 import argparse
 import datetime
 import json
+import math
 import random
 import time
 from pathlib import Path
@@ -9,12 +10,51 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.tensorboard import SummaryWriter
 
 import datasets
 import utils.misc as utils
 from datasets import build_dataset, get_coco_api_from_dataset
 from engine import evaluate, train_one_epoch
 from models import build_model
+
+
+def _compute_class_weights_from_coco(args):
+    if args.dataset_file != "coco":
+        return None
+    if args.class_weight_strategy == "none":
+        return None
+
+    ann_path = Path(args.coco_path) / "annotations" / "instances_train2017.json"
+    if not ann_path.exists():
+        print(f"⚠️  class weight computation skipped (missing {ann_path})")
+        return None
+
+    with ann_path.open("r") as f:
+        coco = json.load(f)
+    counts = [0 for _ in range(args.num_classes)]
+    for ann in coco.get("annotations", []):
+        cat_id = int(ann["category_id"])
+        if 1 <= cat_id <= args.num_classes:
+            counts[cat_id - 1] += 1
+
+    total = sum(counts)
+    if total == 0:
+        print("⚠️  class weight computation skipped (no annotations)")
+        return None
+
+    eps = 1e-6
+    if args.class_weight_strategy == "frequency":
+        weights = [total / (args.num_classes * max(c, 1)) for c in counts]
+    elif args.class_weight_strategy == "effective_num_samples":
+        beta = args.effective_num_beta
+        weights = [(1 - beta) / (1 - math.pow(beta, max(c, 1)) + eps) for c in counts]
+    else:
+        raise ValueError(f"Unsupported class_weight_strategy: {args.class_weight_strategy}")
+
+    mean_w = sum(weights) / len(weights)
+    weights = [w / (mean_w + eps) for w in weights]
+    return weights
 
 
 def get_args_parser():
@@ -77,6 +117,33 @@ def get_args_parser():
     parser.add_argument('--giou_loss_coef', default=2, type=float)
     parser.add_argument('--eos_coef', default=0.1, type=float,
                         help="Relative classification weight of the no-object class")
+    parser.add_argument('--use_focal_loss', action='store_true',
+                        help='Use focal loss for classification instead of cross-entropy')
+    parser.add_argument('--focal_gamma', default=2.0, type=float,
+                        help='Focal loss focusing parameter')
+    parser.add_argument('--class_weight_strategy', default='none', type=str,
+                        choices=['none', 'frequency', 'effective_num_samples'],
+                        help='How to compute class weights used in focal alpha')
+    parser.add_argument('--effective_num_beta', default=0.999, type=float,
+                        help='Beta for effective number of samples weighting')
+    parser.add_argument('--small_object_weighted_loss', action='store_true',
+                        help='Upweight box losses for small objects')
+    parser.add_argument('--small_obj_area_thresh', default=0.001, type=float,
+                        help='Normalized area threshold where small-object upweighting starts')
+    parser.add_argument('--small_obj_weight_factor', default=3.0, type=float,
+                        help='Scaling factor for small-object loss weighting')
+    parser.add_argument('--small_obj_gamma', default=1.5, type=float,
+                        help='Exponent for size-aware weighting curve')
+    parser.add_argument('--small_obj_max_weight', default=10.0, type=float,
+                        help='Maximum per-box upweight for small objects')
+    parser.add_argument('--eval_score_thresh', default=0.3, type=float,
+                        help='Score threshold for error analysis outputs')
+    parser.add_argument('--enable_eval_dashboard', action='store_true',
+                        help='Export size-aware metrics and per-class analysis JSON/CSV')
+    parser.add_argument('--tensorboard', action='store_true',
+                        help='Enable TensorBoard scalar logging')
+    parser.add_argument('--tensorboard_dir', default='',
+                        help='Directory for TensorBoard logs (defaults to <output_dir>/tensorboard)')
 
     # dataset parameters
     parser.add_argument('--dataset_file', default='coco')
@@ -122,6 +189,10 @@ def main(args):
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
+
+    args.class_weights = _compute_class_weights_from_coco(args)
+    if args.class_weights is not None:
+        print("✅ Computed class weights for imbalance handling")
 
     model, criterion, postprocessors = build_model(args)
     model.to(device)
@@ -174,6 +245,12 @@ def main(args):
         model_without_ddp.detr.load_state_dict(checkpoint['model'])
 
     output_dir = Path(args.output_dir)
+    writer = None
+    if args.tensorboard and args.output_dir:
+        tb_dir = Path(args.tensorboard_dir) if args.tensorboard_dir else (output_dir / "tensorboard")
+        tb_dir.mkdir(parents=True, exist_ok=True)
+        writer = SummaryWriter(log_dir=str(tb_dir))
+
     if args.resume:
         if args.resume.startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(
@@ -193,7 +270,7 @@ def main(args):
 
     if args.eval:
         test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
-                                              data_loader_val, base_ds, device, args.output_dir)
+                                              data_loader_val, base_ds, device, args.output_dir, args=args, epoch=args.start_epoch)
         if args.output_dir:
             utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
         return
@@ -222,13 +299,27 @@ def main(args):
                 }, checkpoint_path)
 
         test_stats, coco_evaluator = evaluate(
-            model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir
+            model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir, args=args, epoch=epoch
         )
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                      **{f'test_{k}': v for k, v in test_stats.items()},
                      'epoch': epoch,
                      'n_parameters': n_parameters}
+
+        if writer is not None and utils.is_main_process():
+            for k, v in log_stats.items():
+                if isinstance(v, (int, float)):
+                    writer.add_scalar(k, v, epoch)
+            bbox = log_stats.get("test_coco_eval_bbox", None)
+            if isinstance(bbox, list) and len(bbox) >= 6:
+                writer.add_scalar("metrics/AP", float(bbox[0]), epoch)
+                writer.add_scalar("metrics/AP50", float(bbox[1]), epoch)
+                writer.add_scalar("metrics/AP75", float(bbox[2]), epoch)
+                writer.add_scalar("metrics/AP_small", float(bbox[3]), epoch)
+                writer.add_scalar("metrics/AP_medium", float(bbox[4]), epoch)
+                writer.add_scalar("metrics/AP_large", float(bbox[5]), epoch)
+            writer.flush()
 
         if args.output_dir and utils.is_main_process():
             with (output_dir / "log.txt").open("a") as f:
@@ -248,6 +339,8 @@ def main(args):
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
+    if writer is not None:
+        writer.close()
 
 
 if __name__ == '__main__':

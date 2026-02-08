@@ -2,7 +2,7 @@
 
 # Dataset
 dataset_file: coco
-coco_path: data/processed
+coco_path: /content/drive/MyDrive/datasets/visdrone_coco
 num_classes: 11
 
 # Model
