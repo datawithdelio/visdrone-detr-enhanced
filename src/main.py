@@ -11,6 +11,7 @@ import json
 import math
 import random
 import time
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +24,76 @@ import utils.misc as utils
 from datasets import build_dataset, get_coco_api_from_dataset
 from engine import evaluate, train_one_epoch
 from models import build_model
+
+
+def _load_coco_json(coco_path, split):
+    ann_path = Path(coco_path) / "annotations" / f"instances_{split}2017.json"
+    if not ann_path.exists():
+        raise FileNotFoundError(f"Missing annotations file: {ann_path}")
+    with ann_path.open("r") as f:
+        data = json.load(f)
+    return data, ann_path
+
+
+def _validate_coco_split_structure(coco_data, ann_path, expected_num_classes):
+    categories = coco_data.get("categories", [])
+    if not categories:
+        raise ValueError(f"No categories found in {ann_path}")
+
+    cat_ids = sorted(int(c["id"]) for c in categories if "id" in c)
+    expected_ids = list(range(1, len(categories) + 1))
+    if cat_ids != expected_ids:
+        raise ValueError(
+            f"Non-contiguous category ids in {ann_path}. "
+            f"Expected {expected_ids[:5]}... got {cat_ids[:5]}..."
+        )
+
+    if len(categories) != expected_num_classes:
+        raise ValueError(
+            f"num_classes={expected_num_classes} does not match categories={len(categories)} in {ann_path}"
+        )
+
+    images = coco_data.get("images", [])
+    annotations = coco_data.get("annotations", [])
+    if not images:
+        raise ValueError(f"No images found in {ann_path}")
+    if not annotations:
+        raise ValueError(f"No annotations found in {ann_path}")
+
+    valid_cat_ids = set(cat_ids)
+    image_ids = {int(i["id"]) for i in images if "id" in i}
+    anns_per_img = defaultdict(int)
+    bad_bbox = 0
+
+    for ann in annotations:
+        cat_id = int(ann.get("category_id", -1))
+        if cat_id not in valid_cat_ids:
+            raise ValueError(f"Invalid category_id={cat_id} in {ann_path}")
+
+        img_id = int(ann.get("image_id", -1))
+        if img_id not in image_ids:
+            raise ValueError(f"Annotation references missing image_id={img_id} in {ann_path}")
+
+        bbox = ann.get("bbox", None)
+        if not isinstance(bbox, list) or len(bbox) != 4:
+            raise ValueError(f"Invalid bbox format in {ann_path}: {bbox}")
+
+        x, y, w, h = [float(v) for v in bbox]
+        if w <= 0 or h <= 0:
+            bad_bbox += 1
+        anns_per_img[img_id] += 1
+
+    if bad_bbox > 0:
+        raise ValueError(f"Found {bad_bbox} non-positive width/height boxes in {ann_path}")
+
+    labeled_images = sum(1 for img_id in image_ids if anns_per_img.get(img_id, 0) > 0)
+    if labeled_images == 0:
+        raise ValueError(f"No labeled images found in {ann_path}")
+
+    print(
+        f"✅ {ann_path.name}: images={len(images)}, anns={len(annotations)}, "
+        f"categories={len(categories)}, labeled_images={labeled_images}"
+    )
 
 
 def _compute_class_weights_from_coco(args):
@@ -101,6 +172,16 @@ def _validate_coco_configuration(args):
             f"⚠️  num_queries={args.num_queries} is very low for dense drone scenes; "
             "this can severely cap recall."
         )
+
+
+def _run_strict_data_checks(args):
+    """Validate train/val COCO JSON structure and bbox/category consistency."""
+    if args.dataset_file != "coco":
+        return
+    train_data, train_ann = _load_coco_json(args.coco_path, "train")
+    val_data, val_ann = _load_coco_json(args.coco_path, "val")
+    _validate_coco_split_structure(train_data, train_ann, args.num_classes)
+    _validate_coco_split_structure(val_data, val_ann, args.num_classes)
 
 
 def get_args_parser():
@@ -213,6 +294,14 @@ def get_args_parser():
                         help='start epoch')
     parser.add_argument('--eval', action='store_true')
     parser.add_argument('--num_workers', default=2, type=int)
+    parser.add_argument('--strict_data_checks', action='store_true',
+                        help='Run strict COCO JSON checks for category ids and bbox validity before training')
+    parser.add_argument('--overfit_subset_size', default=0, type=int,
+                        help='If > 0, train/eval on only the first N images for pipeline debugging')
+    parser.add_argument('--eval_train_split', action='store_true',
+                        help='Also evaluate on train split each epoch to diagnose val-label issues')
+    parser.add_argument('--debug_disable_train_augment', action='store_true',
+                        help='Use val transforms for train split (helps 1-5 image overfit debugging)')
 
     # distributed training parameters
     parser.add_argument('--world_size', default=1, type=int,
@@ -239,6 +328,8 @@ def main(args):
     random.seed(seed)
 
     _validate_coco_configuration(args)
+    if args.strict_data_checks:
+        _run_strict_data_checks(args)
 
     # Precompute class weights once and pass them through args.
     args.class_weights = _compute_class_weights_from_coco(args)
@@ -268,6 +359,12 @@ def main(args):
 
     dataset_train = build_dataset(image_set='train', args=args)
     dataset_val = build_dataset(image_set='val', args=args)
+    if args.overfit_subset_size > 0:
+        overfit_n = min(args.overfit_subset_size, len(dataset_train), len(dataset_val))
+        subset_idx = list(range(overfit_n))
+        dataset_train = torch.utils.data.Subset(dataset_train, subset_idx)
+        dataset_val = torch.utils.data.Subset(dataset_val, subset_idx)
+        print(f"🧪 Overfit debug mode enabled: using first {overfit_n} images for train+val")
 
     if args.distributed:
         sampler_train = DistributedSampler(dataset_train)
@@ -290,6 +387,18 @@ def main(args):
         base_ds = get_coco_api_from_dataset(coco_val)
     else:
         base_ds = get_coco_api_from_dataset(dataset_val)
+    train_ds_for_eval = get_coco_api_from_dataset(dataset_train) if args.eval_train_split else None
+
+    data_loader_train_eval = None
+    if args.eval_train_split:
+        data_loader_train_eval = DataLoader(
+            dataset_train,
+            args.batch_size,
+            sampler=torch.utils.data.SequentialSampler(dataset_train),
+            drop_last=False,
+            collate_fn=utils.collate_fn,
+            num_workers=args.num_workers,
+        )
 
     if args.frozen_weights is not None:
         checkpoint = torch.load(args.frozen_weights, map_location='cpu')
@@ -354,9 +463,16 @@ def main(args):
         test_stats, coco_evaluator = evaluate(
             model, criterion, postprocessors, data_loader_val, base_ds, device, args.output_dir, args=args, epoch=epoch
         )
+        train_eval_stats = {}
+        if args.eval_train_split:
+            train_eval_stats, _ = evaluate(
+                model, criterion, postprocessors, data_loader_train_eval, train_ds_for_eval,
+                device, args.output_dir, args=args, epoch=epoch
+            )
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                      **{f'test_{k}': v for k, v in test_stats.items()},
+                     **{f'train_eval_{k}': v for k, v in train_eval_stats.items()},
                      'epoch': epoch,
                      'n_parameters': n_parameters}
 

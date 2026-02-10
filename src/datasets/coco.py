@@ -156,5 +156,13 @@ def build(image_set, args):
     }
 
     img_folder, ann_file = PATHS[image_set]
-    dataset = CocoDetection(img_folder, ann_file, transforms=make_coco_transforms(image_set), return_masks=args.masks)
+    transform_split = image_set
+    if image_set == "train" and getattr(args, "debug_disable_train_augment", False):
+        transform_split = "val"
+    dataset = CocoDetection(
+        img_folder,
+        ann_file,
+        transforms=make_coco_transforms(transform_split),
+        return_masks=args.masks
+    )
     return dataset
